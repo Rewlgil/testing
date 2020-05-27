@@ -1,4 +1,4 @@
 {
   version : 1.1,
-  code_url : "https://github.com/Rewlgil/testing/blob/master/blink.ino.esp32.bin?raw=true"
+  code_url : "https://raw.githubusercontent.com/Rewlgil/testing/master/blink.ino.esp32.bin"
 }
