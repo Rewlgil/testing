@@ -1,4 +1,4 @@
 {
-  version : 1.02,
+  version : 1.03,
   code_url : "https://raw.githubusercontent.com/Rewlgil/testing/master/PMS_screen.ino.esp32.bin"
 }
