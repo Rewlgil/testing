@@ -5,7 +5,7 @@ class MovingAverage
 {
   public:
     void giveAVGValue(T getdata);
-    void getAVGValue(float *avg_value);
+    void getAVGValue(T *avg_value);
   private:
     T value[numreading] = {0};
     T sum = 0;
@@ -32,12 +32,12 @@ void MovingAverage<T>::giveAVGValue(T getdata)
 }
 
 template<class T>
-void MovingAverage<T>::getAVGValue(float *avg_value)
+void MovingAverage<T>::getAVGValue(T *avg_value)
 {
   if (first_time == true)
-    *avg_value = (float)sum / index;
+    *avg_value = (T)((float)sum / index);
   else
-    *avg_value = (float)sum / numreading;
+    *avg_value = (T)((float)sum / numreading);
 //******print value for debug***********************
   for (uint16_t i = 0; i < numreading; i++)
   {
