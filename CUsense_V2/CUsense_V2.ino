@@ -10,19 +10,17 @@
 #include "Free_Fonts.h"
 #include <SHTC3.h>
 #include "SPIFFS.h"
-#include "average.h"
-#include "read_pms.h"
 #include "time.h"
 #include <JPEGDecoder.h>
 #include "jpeg1.h"
 #include "jpeg2.h"
 
-//#define mqtt_server "161.200.80.206"
 IPAddress mqtt_server(161, 200, 80, 206);
-#define current_version 1.18
+#define current_version 1.00
 #define versionINF "https://raw.githubusercontent.com/Rewlgil/testing/master/text.txt"
 
-#define set_screen_interval 60000
+#define numreading 500
+#define set_screen_interval 60000 //(1 * 60 * 1000)
 #define send_interval 300000      //(5 * 60 * 1000)
 
 SHTC3 tempSensor(Wire);
@@ -31,12 +29,53 @@ TFT_eSPI tft = TFT_eSPI();
 WiFiClient espClient;
 PubSubClient client(espClient);
 
+struct pms5003data {
+  uint16_t framelen;
+  uint16_t pm10_standard, pm25_standard, pm100_standard;
+  uint16_t pm10_env, pm25_env, pm100_env;
+  uint16_t particles_03um, particles_05um, particles_10um, 
+           particles_25um, particles_50um, particles_100um;
+  uint16_t unused;
+  uint16_t checksum;
+};
+struct pms5003data data;
+float Temp,Humid;
+bool tempError = true;
+
+struct average_data {
+  uint32_t PM_10, PM_25, PM_100;
+  uint32_t Humid;
+  float Temp;
+};
+struct average_data avg;
+
+template<class T>
+class MovingAverage
+{
+  public:
+    void giveAVGValue(T getdata);
+    void getAVGValue(T *avg_value);
+  private:
+    T value[numreading] = {0};
+    T sum = 0;
+    uint16_t index = 0;
+    boolean first_time = true;
+};
+
+MovingAverage<uint32_t> pm10;
+MovingAverage<uint32_t> pm25;
+MovingAverage<uint32_t> pm100;
+MovingAverage<float> temp;
+MovingAverage<uint32_t> humid;
+
+boolean readPMSdata(void);
+
 // MQTT
 char topic[22] = "pmsensor/";
 char doc_char[130];
 String mac;
 char mac_array[13];
-// ntp time
+// NTP time
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 7*3600;
 const int   daylightOffset_sec = 0;
@@ -89,8 +128,8 @@ void setup()
   tft.drawFastHLine(0,   230, 350, TFT_WHITE);
   tft.drawFastVLine(175, 231,  89, TFT_WHITE);
   tft.drawFastVLine(350,   0, 320, TFT_WHITE);
-  tft.fillRect(0, 20, 135, 90, tft.color565(0, 50, 100)); // Green
-  tft.fillTriangle(135, 20, 135, 110, 200, 110, tft.color565(0, 50, 100)); // Green
+  tft.fillRect(0, 20, 135, 90, tft.color565(0, 50, 100)); // Blue
+  tft.fillTriangle(135, 20, 135, 110, 200, 110, tft.color565(0, 50, 100)); // Blue
   tft.fillRect(0, 110, 135, 90, tft.color565(255, 0, 255)); // Pink
   tft.fillTriangle(135, 200, 135, 110, 200, 110, tft.color565(255, 0, 255)); // Pink
   tft.fillCircle(240, 110, 100, tft.color565(200,   0,  0)); // Red
@@ -106,7 +145,11 @@ void setup()
   tft.drawString("PM 1", 5, 25);
   tft.drawString("PM 10", 5, 115);
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("ug/m3", 340, 220);
+  tft.loadFont("Calibri-Italic-40");
+  tft.drawString("ug/m", 320, 220);
+  tft.setTextDatum(BL_DATUM);
+  tft.loadFont("Calibri-Italic-28");
+  tft.drawString("3", 320, 200);
   tft.unloadFont();
   drawArrayJpeg(thermometer, sizeof(thermometer),   5, 251);
   drawArrayJpeg(humidity,    sizeof(humidity),    180, 251);
@@ -115,36 +158,20 @@ void setup()
   tft.setTextColor(TFT_BLUE);   tft.setFreeFont(FS9); tft.setTextDatum(TL_DATUM);
   tft.drawString("MAC: " + mac, 5, 305, GFXFF);
   tft.drawString("Firmware: ", 192, 305, GFXFF);  tft.drawFloat(current_version, 2, 267, 305, GFXFF);
-  tft.drawString("Wi-Fi: ",  310, 305, GFXFF);
-  synctime();
+  tft.drawString("Wi-Fi: ",  308, 305, GFXFF);
   start_time = millis();
   last_set_screen = millis();
   last_send_time = millis();
   setTime();
 }
 
-float Temp,Humid;
-
-struct average_data {
-  uint32_t PM_10, PM_25, PM_100;
-  uint32_t Humid;
-  float Temp;
-};
-struct average_data avg;
-
-MovingAverage<uint32_t> pm10;
-MovingAverage<uint32_t> pm25;
-MovingAverage<uint32_t> pm100;
-MovingAverage<float> temp;
-MovingAverage<uint32_t> humid;
-
 void loop() {
+  setTime();
   if (!client.connected()) {
     connection_state = false;
     displaySystemMSG();
     reconnectMQTT();
   }
-  
   if ( Serial2.available() && readPMSdata() ) {
     pm10.giveAVGValue(data.pm10_standard);
     pm25.giveAVGValue(data.pm25_standard);
@@ -155,14 +182,20 @@ void loop() {
   }
   
   if (((millis() - start_time) % 1000) == 0) {
-    setTime();
     tempSensor.begin(true);
     tempSensor.sample();
     Temp = tempSensor.readTempC();
     Humid = tempSensor.readHumidity();
-    temp.giveAVGValue(Temp);
-    humid.giveAVGValue(Humid);
-//    Serial.printf("Temp = %.2f C\tHumid = %.2f %%\n", Temp, Humid);
+    if (Temp >= 0 && Humid >= 0){
+      tempError = false;
+      temp.giveAVGValue(Temp);
+      humid.giveAVGValue(Humid);
+//      Serial.printf("Temp = %.2f C\tHumid = %.2f %%\n", Temp, Humid);
+    }
+    else{
+      tempError = true;
+//      Serial.println("error to read Temp and Humid")
+    }
   }
   
   if ((millis() - last_set_screen) >= set_screen_interval){
@@ -233,41 +266,31 @@ void setScreen(void){
   tft.drawNumber(avg.PM_100, 60, 158);
   tft.setTextDatum(ML_DATUM);                        //  Temp && Humid
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("          ", 40,  275, GFXFF);
+  tft.drawString("            ", 40,  275, GFXFF);
   tft.drawString("          ", 220, 275, GFXFF);
-  tft.drawFloat(avg.Temp, 1, 40,  275);
-  tft.drawNumber(avg.Humid, 220, 275);
-  tft.loadFont("DS-Digital-Italic-40");              // unit
-  tft.setTextColor(TFT_WHITE);
+  if (!tempError){
+    tft.drawFloat(avg.Temp, 1, 45,  275);
+    tft.drawNumber(avg.Humid, 230, 275);
+  }
+  else{
+    tft.drawString("ERR   ", 40,  275, GFXFF);
+    tft.drawString("ERR  ", 220, 275, GFXFF);
+  }
   tft.setTextDatum(BR_DATUM);
-  tft.drawString("ug/m3", 340, 220);
+  tft.setTextColor(TFT_WHITE);
+  tft.loadFont("Calibri-Italic-40");
+  tft.drawString("ug/m", 320, 220);
+  tft.setTextDatum(BL_DATUM);
+  tft.loadFont("Calibri-Italic-28");
+  tft.drawString("3", 320, 200);
   tft.unloadFont();
-}
-
-void synctime(void)
-{
-  struct tm timeinfo;
-  char timeSec[3];
-  char timeSecBegin[3];
-  
-  if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
-    return;
-  }
-  strftime(timeSecBegin, 3, "%S", &timeinfo);
-  timeSec[0] = timeSecBegin[0]; timeSec[1] = timeSecBegin[1]; timeSec[2] = timeSecBegin[2];
-  
-  while(timeSec == timeSecBegin){
-    getLocalTime(&timeinfo);
-    strftime(timeSec, 3, "%S", &timeinfo);
-  }
 }
 
 void setTime(void){
   struct tm timeinfo;
-  static char timeHour[3];
-  static char timeMin[3];
-  static char timeSec[3];
+  static char timeHour[3];    static char lastHour[3] = "88";
+  static char timeMin[3];     static char lastMin[3] = "88";
+  static char timeSec[3];     static char lastSec[3] = "88";
   static bool first_time = true;
   
   if(!getLocalTime(&timeinfo)){
@@ -277,22 +300,35 @@ void setTime(void){
   strftime(timeHour,3, "%H", &timeinfo);
   strftime(timeMin, 3, "%M", &timeinfo);
   strftime(timeSec, 3, "%S", &timeinfo);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
   if (first_time){
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.loadFont("DS-Digital-Italic-40");
     tft.setTextDatum(TL_DATUM);
-    tft.drawString(" s", 440, 190);
-    tft.drawString(" m", 440, 110);
-    tft.drawString(" h",  440,  30);
+    tft.drawString(" s", 440, 210);
+    tft.drawString(" m", 440, 130);
+    tft.drawString(" h",  440,  50);
+    first_time = false;
   }
-  tft.loadFont("DS-Digital-Bold-70");
-  tft.setTextDatum(TR_DATUM);
-  tft.drawString(" " + (String)timeSec, 440, 190);
-  if ((timeSec[0] == '0' && timeSec[1] == '0') || first_time)
-    {tft.drawString("      ", 440, 110); tft.drawString((String)timeMin, 440, 110);}
-  if ((timeMin[0] == '0' && timeMin[1] == '0' && timeSec[0] == '0' && timeSec[1] == '0') || first_time)
-    {tft.drawString("      ", 440,  30); tft.drawString((String)timeHour,440, 30);}
-  first_time = false;
+  if (lastSec[0] != timeSec[0] || lastSec[1] != timeSec[1])
+  { 
+    tft.loadFont("DS-Digital-Bold-70");
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(TFT_BLACK);  tft.drawString((String)lastSec, 440, 190);
+    tft.setTextColor(TFT_WHITE);  tft.drawString((String)timeSec, 440, 190);
+    for (uint8_t i = 0; i < 3; i++) lastSec[i] = timeSec[i];
+    if (lastMin[0] != timeMin[0] || lastMin[1] != timeMin[1])
+    {
+      tft.setTextColor(TFT_BLACK);  tft.drawString((String)lastMin, 440, 110);
+      tft.setTextColor(TFT_WHITE);  tft.drawString((String)timeMin, 440, 110);
+      for (uint8_t i = 0; i < 3; i++) lastMin[i] = timeMin[i];
+      if (lastHour[0] != timeHour[0] || lastHour[1] != timeHour[1])
+      {
+        tft.setTextColor(TFT_BLACK);  tft.drawString((String)lastHour, 440, 30);
+        tft.setTextColor(TFT_WHITE);  tft.drawString((String)timeHour, 440, 30);
+        for (uint8_t i = 0; i < 3; i++) lastHour[i] = timeHour[i];
+      }
+    }
+  }
 }
 
 void reconnectMQTT(){
