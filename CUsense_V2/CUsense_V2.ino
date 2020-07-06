@@ -16,12 +16,13 @@
 #include "jpeg2.h"
 
 IPAddress mqtt_server(161, 200, 80, 206);
-#define current_version 1.00
+#define current_version 1.01
 #define versionINF "https://raw.githubusercontent.com/Rewlgil/testing/master/text.txt"
 
 #define numreading 500
-#define set_screen_interval 60000 //(1 * 60 * 1000)
-#define send_interval 300000      //(5 * 60 * 1000)
+#define readTempInterval 1000     //(1 * 1000)
+#define setScreenInterval 60000 //(1 * 60 * 1000)
+#define sendInterval 300000      //(5 * 60 * 1000)
 
 SHTC3 tempSensor(Wire);
 WiFiManager wifiManager;
@@ -80,7 +81,7 @@ const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 7*3600;
 const int   daylightOffset_sec = 0;
 
-uint32_t start_time , last_set_screen, last_send_time;
+uint32_t readSensTime , setScreenTime, sendTime;
 bool connection_state = true;
 
 void setup() 
@@ -159,10 +160,10 @@ void setup()
   tft.drawString("MAC: " + mac, 5, 305, GFXFF);
   tft.drawString("Firmware: ", 192, 305, GFXFF);  tft.drawFloat(current_version, 2, 267, 305, GFXFF);
   tft.drawString("Wi-Fi: ",  308, 305, GFXFF);
-  start_time = millis();
-  last_set_screen = millis();
-  last_send_time = millis();
   setTime();
+  readSensTime = millis() + readTempInterval;
+  setScreenTime = millis() + setScreenInterval;
+  sendTime = millis() + sendInterval;
 }
 
 void loop() {
@@ -181,7 +182,7 @@ void loop() {
 //    Serial.print("pm10  = ");   Serial.println(data.pm100_standard);
   }
   
-  if (((millis() - start_time) % 1000) == 0) {
+  if (millis() >= readSensTime) {
     tempSensor.begin(true);
     tempSensor.sample();
     Temp = tempSensor.readTempC();
@@ -196,15 +197,16 @@ void loop() {
       tempError = true;
 //      Serial.println("error to read Temp and Humid")
     }
+    readSensTime += readTempInterval;
   }
   
-  if ((millis() - last_set_screen) >= set_screen_interval){
+  if (millis() >= setScreenTime){
     getAllAVG();
     setScreen();
-    last_set_screen = millis();
+    setScreenTime += setScreenInterval;
   }
 
-  if ((millis() - last_send_time) >= send_interval){
+  if (millis() >= sendTime){
     getAllAVG();
     //send data to server
     StaticJsonDocument<150> doc;
@@ -219,7 +221,7 @@ void loop() {
     Serial.print("\n");
     serializeJsonPretty(doc, doc_char);
     client.publish(topic, doc_char);
-    last_send_time = millis();
+    sendTime += sendInterval;
   }
   client.loop();
 }
