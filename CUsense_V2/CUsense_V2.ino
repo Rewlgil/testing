@@ -16,7 +16,7 @@
 #include "jpeg2.h"
 
 IPAddress mqtt_server(161, 200, 80, 206);
-#define current_version 1.01
+#define current_version 1.02
 #define versionINF "https://raw.githubusercontent.com/Rewlgil/testing/master/text.txt"
 
 #define numreading 500
@@ -170,7 +170,6 @@ void loop() {
   setTime();
   if (!client.connected()) {
     connection_state = false;
-    displaySystemMSG();
     reconnectMQTT();
   }
   if ( Serial2.available() && readPMSdata() ) {
@@ -191,13 +190,13 @@ void loop() {
       tempError = false;
       temp.giveAVGValue(Temp);
       humid.giveAVGValue(Humid);
+      readSensTime += readTempInterval;
 //      Serial.printf("Temp = %.2f C\tHumid = %.2f %%\n", Temp, Humid);
     }
     else{
       tempError = true;
 //      Serial.println("error to read Temp and Humid")
     }
-    readSensTime += readTempInterval;
   }
   
   if (millis() >= setScreenTime){
@@ -220,8 +219,8 @@ void loop() {
     serializeJsonPretty(doc, Serial);
     Serial.print("\n");
     serializeJsonPretty(doc, doc_char);
-    client.publish(topic, doc_char);
-    sendTime += sendInterval;
+    if (client.publish(topic, doc_char))
+      sendTime += sendInterval;
   }
   client.loop();
 }
@@ -337,7 +336,7 @@ void reconnectMQTT(){
   static uint32_t last_attemp = 0;
   while( (!client.connected() && ((millis() - last_attemp) > 5000))){
     Serial.print("Attempting MQTT connection...");
-    if (client.connect("ESP32Client")){
+    if (client.connect(mac_array)){
       Serial.println("connected");
       connection_state = true;
       displaySystemMSG();
